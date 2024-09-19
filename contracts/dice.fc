@@ -1,0 +1,60 @@
+#include "imports/stdlib.fc";
+const op::deploy = 0; const op::bet = 1; const op::setup = 2; const op::top_up = 3; const op::withdraw = 4;
+const int result::value_error = 0; const int result::loss = 1;
+global slice owner;
+global int max_bet_profit; ;; coins
+global int house_edge_x10; ;; uint16, denom = 10000
+() load_data() impure inline { var ds = get_data().begin_parse();
+    owner = ds~load_msg_addr();
+    max_bet_profit = ds~load_coins();
+    house_edge_x10 = ds~load_uint(16); 
+    ds.end_parse(); }
+() save_data() impure { set_data(begin_cell()
+    .store_slice(owner)
+    .store_coins(max_bet_profit)
+    .store_uint(house_edge_x10, 16)
+    .end_cell()); }
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4); if (flags & 1) { return (); }
+    slice sender_address = cs~load_msg_addr();
+    int op = in_msg_body~load_uint(32); if ((op == op::deploy) | (op == op::top_up)) { return (); }
+    int query_id = in_msg_body~load_uint(64);
+    load_data();
+    if (op == op::bet) {
+        int bet_odds = in_msg_body~load_uint(16);
+        int hi? = in_msg_body~load_uint(2); ;; lo is 0, hi is 1
+        int fair_odds_x100 = bet_odds * (1000 + house_edge_x10);
+        int lo = 10000000 / fair_odds_x100;
+        ~dump(lo);
+        int hi = 10000 - lo;
+        ~dump(hi);
+        randomize_lt();
+        int r = rand(9999); ;; Use values below for tests
+        ;; int r = 1000;
+        ;; int r = 5000;
+        ;; int r = 8000;
+        ~strdump("0");
+        if (((hi? == 0) & (r <= lo)) | ((hi? == 1) & (r >= hi))) { ;; Victory
+            ~strdump("1");
+            int win_profit = msg_value * (bet_odds - 1);
+            ~dump(win_profit);
+            if (win_profit > max_bet_profit) { send_raw_message(begin_cell()
+                .store_uint(0x10, 6).store_slice(owner).store_uint(0, 111).store_slice(sender_address).store_uint(result::value_error, 2).end_cell(), 1); 
+                return (); }
+            send_raw_message(begin_cell().store_uint(0x18, 6).store_slice(sender_address).store_coins(win_profit).store_uint(0, 107).end_cell(), 1);
+            return (); } 
+        else { send_raw_message(begin_cell()
+            .store_uint(0x10, 6).store_slice(owner).store_uint(0, 111).store_slice(sender_address).store_uint(result::loss, 2).end_cell(), 1); 
+            return (); }
+        save_data(); return (); }
+    if (op == op::setup) {
+        owner = in_msg_body~load_msg_addr();
+        max_bet_profit = in_msg_body~load_coins();
+        house_edge_x10 = in_msg_body~load_uint(16);
+        save_data(); return (); }
+    if (op == op::withdraw) { int w_amount = in_msg_body~load_coins();
+        send_raw_message(begin_cell().store_uint(0x18, 6).store_slice(owner).store_coins(w_amount).store_uint(0, 107).end_cell(), 1); 
+        save_data(); return (); }
+    throw(0xffff); }
+cell get_smc_data() method_id { return get_data(); }
